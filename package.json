@@ -8,13 +8,19 @@
     "start": "next start",
     "embed": "npx tsx scripts/embed.ts",
     "upload": "npx tsx scripts/upload-to-pinecone.ts",
-    "vectorize": "npm run embed && npm run upload"
+    "vectorize": "npm run embed && npm run upload",
+    "parse-greek-xml": "npx tsx scripts/parseGreekXML.ts",
+    "parse-hebrew-xml": "npx tsx scripts/parseHebrewXML.ts",
+    "load-originals": "npx tsx scripts/loadBibleOriginals.ts"
   },
   "dependencies": {
     "@pinecone-database/pinecone": "^6.1.2",
+    "@types/xmldom": "^0.1.34",
+    "@xmldom/xmldom": "^0.8.11",
     "dotenv": "^17.2.1",
     "next": "15.5.2",
     "openai": "^5.16.0",
+    "puppeteer": "^24.17.1",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

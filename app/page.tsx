@@ -13,6 +13,8 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [currentResponse, setCurrentResponse] = useState("");
+  const [currentStatus, setCurrentStatus] = useState("");
 
   const handleSend = async (text?: string) => {
     const messageText = text || inputValue.trim();
@@ -28,9 +30,11 @@ export default function Home() {
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
     setIsLoading(true);
+    setCurrentResponse("");
+    setCurrentStatus("");
 
     try {
-      // Let OpenAI parse the user's intent, fix grammar/spelling, and determine topK
+      // Parse the user's intent first
       const intentResponse = await fetch("/api/parse-intent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -41,50 +45,131 @@ export default function Home() {
       const cleanedQuery = intentData.cleanedQuery || messageText;
       const topK = intentData.topK || 5;
       const hasSpecificVerse = intentData.hasSpecificVerse || false;
-      
-      // Use the appropriate API based on whether it's a specific verse request
-      let apiEndpoint = hasSpecificVerse ? "/api/search" : "/api/search-rerank";
-      
+      const specificVerses = intentData.specificVerses || [];
 
-      // Call the appropriate API
-      const response = await fetch(apiEndpoint, {
+      // Use the streaming analyze-verse endpoint
+      const response = await fetch("/api/analyze-verse-stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: cleanedQuery, topK }),
+        body: JSON.stringify({
+          query: cleanedQuery,
+          topK,
+          specificVerses: hasSpecificVerse ? specificVerses : undefined,
+        }),
       });
 
-      const data = await response.json();
+      if (!response.body) throw new Error("No response body");
 
-      // Handle response based on request type
-      let responseText =
-        "Thank you for your question about the Bible. I'm here to help you explore God's word and find wisdom in the scriptures.";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
 
-      if (data.verses && data.aiResponse) {
-        // For specific verse requests, just show the verses directly
-        if (hasSpecificVerse) {
-          responseText = data.aiResponse;
-        } else {
-          // For general questions, show verses + summary
-          responseText = `Here are relevant Bible verses about "${messageText}":\n\n${data.verses}\n\n---\n\n📝 Summary:\n${data.aiResponse}`;
+      let verses: any[] = [];
+      let explanation = "";
+      let responseText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              switch (data.type) {
+                case "status":
+                  setCurrentStatus(data.message);
+                  break;
+
+                case "verses":
+                  verses = data.verses;
+                  // Format verses with improved styling
+                  const versesFormatted = verses
+                    .map((verse: any) => {
+                      let verseText = `<div class="border-l-4 border-indigo-600 bg-indigo-50 p-3 my-2 rounded-r-lg">`;
+                      verseText += `<div class="mb-2">`;
+                      verseText += `<h4 class="font-bold text-lg text-gray-900 mb-1">📖 ${verse.reference}</h4>`;
+                      verseText += `<p class="text-gray-800 italic leading-relaxed">${verse.kjvText}</p>`;
+                      verseText += `</div>`;
+
+                      if (verse.originalText) {
+                        const langName =
+                          verse.originalLanguage === "hebrew"
+                            ? "HEBREW"
+                            : "GREEK";
+                        const flag =
+                          verse.originalLanguage === "hebrew" ? "🇮🇱" : "🇬🇷";
+                        verseText += `<div class="border-t border-indigo-200 pt-2 mt-2">`;
+                        verseText += `<div class="flex items-center gap-2 mb-1">`;
+                        verseText += `<span class="text-sm font-semibold text-indigo-800">${flag} ${langName}</span>`;
+                        verseText += `</div>`;
+                        verseText += `<p class="text-gray-700 font-medium">${verse.originalText}</p>`;
+                        verseText += `</div>`;
+                      }
+
+                      verseText += `</div>`;
+                      return verseText;
+                    })
+                    .join("");
+
+                  if (hasSpecificVerse) {
+                    responseText = `${versesFormatted}\n`;
+                  } else {
+                    responseText = `📝 **Verses about "${messageText}"**\n\n${versesFormatted}\n`;
+                  }
+                  setCurrentResponse(responseText);
+                  break;
+
+                case "explanation":
+                  explanation += data.content;
+                  setCurrentResponse(responseText + explanation);
+                  break;
+
+                case "complete":
+                  setCurrentStatus("");
+                  const assistantMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: responseText + explanation,
+                    isUser: false,
+                    timestamp: new Date(),
+                  };
+                  setMessages((prev) => [...prev, assistantMessage]);
+                  setCurrentResponse("");
+                  break;
+
+                case "error":
+                  setCurrentStatus("");
+                  const errorMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: data.message,
+                    isUser: false,
+                    timestamp: new Date(),
+                  };
+                  setMessages((prev) => [...prev, errorMessage]);
+                  setCurrentResponse("");
+                  return; // Exit the streaming loop
+              }
+            } catch (parseError) {
+              console.warn("Failed to parse streaming data:", parseError);
+            }
+          }
         }
-      } else if (data.verses) {
-        responseText = data.verses;
-      } else if (data.aiResponse) {
-        responseText = data.aiResponse;
       }
-
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: responseText,
-        isUser: false,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
+      console.error("Streaming error:", error);
+      setCurrentStatus("");
+      setCurrentResponse("");
+
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
-        text: "I'm sorry, I'm having trouble accessing the Bible verses right now. Please try again later.",
+        text:
+          error instanceof Error
+            ? error.message
+            : "I'm sorry, I'm having trouble accessing the Bible verses right now. Please try again later.",
         isUser: false,
         timestamp: new Date(),
       };
@@ -103,12 +188,12 @@ export default function Home() {
   };
 
   const suggestedQuestions = [
-    "What does the Bible say about love?",
-    "Tell me about the story of David and Goliath",
-    "What are the Beatitudes?",
-    "Explain the parable of the Good Samaritan",
-    "What does the Bible teach about forgiveness?",
-    "Tell me about the creation story in Genesis",
+    "What does John 3:16 mean?",
+    "Explain Romans 8:28 from the original Greek",
+    "What does Psalms 23:1 mean in Hebrew?",
+    "Give me 5 verses about love",
+    "What does Genesis 1:1 say in Hebrew?",
+    "Explain 1 Corinthians 13:4 in Greek",
   ];
 
   if (messages.length === 0) {
@@ -117,7 +202,10 @@ export default function Home() {
         {/* Header */}
         <header className="bg-white px-6 py-4 border-b border-gray-200">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center">
+            <div
+              className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center cursor-pointer hover:bg-indigo-700 transition-colors"
+              onClick={() => setMessages([])}
+            >
               <svg
                 className="w-6 h-6 text-white"
                 fill="currentColor"
@@ -128,10 +216,10 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-xl font-semibold text-gray-900">
-                Bible Chat
+                BibleRAG - Original Languages
               </h1>
               <p className="text-sm text-gray-600">
-                Ask me anything about God's word
+                Bible study with Hebrew & Greek analysis
               </p>
             </div>
           </div>
@@ -151,12 +239,12 @@ export default function Home() {
             </div>
 
             <h2 className="text-3xl font-bold text-gray-900 mb-4">
-              Welcome to Bible Chat
+              Welcome to BibleRAG
             </h2>
             <p className="text-lg text-gray-600 mb-12">
-              I'm here to help you explore the wisdom and teachings of the
-              Bible. Ask me anything about scripture, stories, verses, or
-              biblical principles.
+              Experience Bible study like never before. I analyze verses using
+              the original Hebrew and Greek texts to provide the most accurate
+              understanding of God's Word. Ask about specific verses or topics!
             </p>
 
             <div className="mb-12">
@@ -186,7 +274,7 @@ export default function Home() {
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
-                onKeyPress={(e) => e.key === "Enter" && handleSend()}
+                onKeyDown={(e) => e.key === "Enter" && handleSend()}
                 placeholder="Ask anything about the Bible..."
                 className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-black"
               />
@@ -222,7 +310,10 @@ export default function Home() {
       {/* Header */}
       <header className="bg-white px-6 py-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center">
+          <div
+            className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center cursor-pointer hover:bg-indigo-700 transition-colors"
+            onClick={() => setMessages([])}
+          >
             <svg
               className="w-6 h-6 text-white"
               fill="currentColor"
@@ -232,9 +323,11 @@ export default function Home() {
             </svg>
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">Bible Chat</h1>
+            <h1 className="text-xl font-semibold text-gray-900">
+              BibleRAG - Original Languages
+            </h1>
             <p className="text-sm text-gray-600">
-              Ask me anything about God's word
+              Bible study with Hebrew & Greek analysis
             </p>
           </div>
         </div>
@@ -251,16 +344,43 @@ export default function Home() {
               }`}
             >
               <div
-                className={`max-w-3xl rounded-2xl px-4 py-3 ${
+                className={`max-w-4xl rounded-2xl px-6 py-4 ${
                   message.isUser
                     ? "bg-indigo-600 text-white"
-                    : "bg-white text-gray-900 border border-gray-200"
+                    : "bg-white text-gray-900 border border-gray-200 shadow-sm"
                 }`}
               >
-                <p className="whitespace-pre-wrap">{message.text}</p>
+                {!message.isUser && (
+                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-gray-100">
+                    <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
+                      <span className="text-indigo-600 text-sm font-medium">
+                        👑
+                      </span>
+                    </div>
+                    <span className="text-sm font-medium text-gray-600">
+                      KING JAMES VERSION
+                    </span>
+                  </div>
+                )}
+                <div>
+                  <div
+                    className="whitespace-pre-wrap leading-relaxed"
+                    dangerouslySetInnerHTML={{
+                      __html: message.text
+                        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                        .replace(
+                          /^### (.*$)/gm,
+                          "<h3 style='font-weight: bold; color: black;'>$1</h3>"
+                        )
+                        .replace(/\n/g, "<br>"),
+                    }}
+                  />
+                </div>
                 <p
-                  className={`text-xs mt-2 ${
-                    message.isUser ? "text-indigo-200" : "text-gray-500"
+                  className={`text-xs mt-3 pt-2 border-t ${
+                    message.isUser
+                      ? "text-indigo-200 border-indigo-500"
+                      : "text-gray-500 border-gray-100"
                   }`}
                 >
                   {formatTime(message.timestamp)}
@@ -270,18 +390,53 @@ export default function Home() {
           ))}
           {isLoading && (
             <div className="flex justify-start">
-              <div className="max-w-3xl rounded-2xl px-4 py-3 bg-white text-gray-900 border border-gray-200">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                  <div
-                    className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                    style={{ animationDelay: "0.1s" }}
-                  ></div>
-                  <div
-                    className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                    style={{ animationDelay: "0.2s" }}
-                  ></div>
+              <div className="max-w-4xl rounded-2xl px-6 py-4 bg-white text-gray-900 border border-gray-200 shadow-sm">
+                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-gray-100">
+                  <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
+                    <span className="text-indigo-600 text-sm font-medium">
+                      👑
+                    </span>
+                  </div>
+                  <span className="text-sm font-medium text-gray-600">
+                    KING JAMES VERSION
+                  </span>
                 </div>
+                {currentStatus ? (
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></div>
+                    <span className="text-sm text-gray-600">
+                      {currentStatus}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                    <div
+                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "0.1s" }}
+                    ></div>
+                    <div
+                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "0.2s" }}
+                    ></div>
+                  </div>
+                )}
+                {currentResponse && (
+                  <div>
+                    <div
+                      className="whitespace-pre-wrap leading-relaxed"
+                      dangerouslySetInnerHTML={{
+                        __html: currentResponse
+                          .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                          .replace(
+                            /^### (.*$)/gm,
+                            "<h3 style='font-weight: bold; color: black;'>$1</h3>"
+                          )
+                          .replace(/\n/g, "<br>"),
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -296,7 +451,7 @@ export default function Home() {
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && handleSend()}
+              onKeyDown={(e) => e.key === "Enter" && handleSend()}
               placeholder="Ask anything about the Bible..."
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-black"
             />
