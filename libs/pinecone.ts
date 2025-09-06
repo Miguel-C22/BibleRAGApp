@@ -18,6 +18,7 @@ export interface VectorRecord {
   metadata?: Record<string, unknown>;
 }
 
+// Uploads vectors to a Pinecone index in batches of 100
 export async function upsertVectors(
   indexName: string,
   vectors: VectorRecord[]
@@ -46,6 +47,7 @@ export async function upsertVectors(
   }
 }
 
+// Searches for similar vectors in a Pinecone index and returns the top K matches
 export async function queryVectors(
   indexName: string,
   vector: number[],
@@ -68,6 +70,7 @@ export async function queryVectors(
   }
 }
 
+// Retrieves a specific vector from a Pinecone index by its ID
 export async function fetchVectorById(
   indexName: string,
   id: string
@@ -100,6 +103,7 @@ export interface RerankInputDocument {
   [key: string]: unknown;
 }
 
+// Re-ranks documents based on their relevance to a query using Pinecone's reranking model
 export async function rerank(
   query: string,
   documents: RerankInputDocument[],

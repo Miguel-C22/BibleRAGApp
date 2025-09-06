@@ -4,15 +4,18 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// This route provides STREAMING Bible analysis with Hebrew/Greek insights
+// It sends back data piece by piece (verses first, then analysis) for better user experience
 export async function POST(request: NextRequest) {
   try {
+    // Get the user's question and optional parameters
     const { query, topK = 5, specificVerses } = await request.json();
 
     if (!query) {
       return new Response("Query is required", { status: 400 });
     }
 
-    // Check if question is Bible-related first
+    // STEP 1: Check if this is a Bible-related question (same as other routes)
     try {
       const relevanceCheck = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -33,6 +36,7 @@ export async function POST(request: NextRequest) {
       const relevanceResponse = relevanceCheck.choices[0]?.message?.content?.trim().toUpperCase();
       const isRelevant = relevanceResponse === "YES";
 
+      // If not Bible-related, send rejection message as stream
       if (!isRelevant) {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
@@ -57,20 +61,22 @@ export async function POST(request: NextRequest) {
       console.error("Relevance check failed:", relevanceError);
     }
 
-    // Create streaming response
+    // STEP 2: Set up streaming response (sends data piece by piece to user)
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          // Send initial status
+          // Send initial status update to user
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", message: "Searching Bible verses..." })}\n\n`));
 
-          // Get verses with original language analysis
+          // STEP 3A: Handle specific verses (like "John 3:16") or general search
           let analysisResult;
           
+          // If user asked for specific verses (like "John 3:16"), get those exactly
           if (specificVerses && Array.isArray(specificVerses) && specificVerses.length > 0) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", message: "Analyzing specific verses..." })}\n\n`));
             
+            // Look up each specific verse with Hebrew/Greek text
             const versePromises = specificVerses.map(verseInfo => 
               analyzeSpecificVerse(verseInfo.book, verseInfo.chapter, verseInfo.verse)
             );
@@ -78,12 +84,12 @@ export async function POST(request: NextRequest) {
             const verseResults = await Promise.all(versePromises);
             const allVerses = verseResults.flatMap(result => result.verses);
             
-            // Send verses first
+            // Send the verses to user first (before analysis)
             const formattedVerses = allVerses.map(verse => ({
               reference: `${verse.book} ${verse.chapter}:${verse.verse}`,
-              kjvText: verse.kjvText,
-              originalText: verse.originalText || null,
-              originalLanguage: verse.originalLanguage || null,
+              kjvText: verse.kjvText,                    // English text
+              originalText: verse.originalText || null,   // Hebrew/Greek text
+              originalLanguage: verse.originalLanguage || null, // "hebrew" or "greek"
               testament: verse.testament,
               book: verse.book,
               chapter: verse.chapter,
@@ -97,16 +103,18 @@ export async function POST(request: NextRequest) {
               query
             };
           } else {
+            // STEP 3B: For general questions, search for relevant verses
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", message: "Finding relevant verses..." })}\n\n`));
             
+            // Search for verses that match the user's question
             analysisResult = await analyzeVerses(query, Math.min(topK, 10));
             
-            // Send verses
+            // Send the found verses to user first
             const formattedVerses = analysisResult.verses.map(verse => ({
               reference: `${verse.book} ${verse.chapter}:${verse.verse}`,
-              kjvText: verse.kjvText,
-              originalText: verse.originalText || null,
-              originalLanguage: verse.originalLanguage || null,
+              kjvText: verse.kjvText,                    // English text
+              originalText: verse.originalText || null,   // Hebrew/Greek text
+              originalLanguage: verse.originalLanguage || null, // "hebrew" or "greek"
               testament: verse.testament,
               book: verse.book,
               chapter: verse.chapter,
@@ -116,10 +124,11 @@ export async function POST(request: NextRequest) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "verses", verses: formattedVerses })}\n\n`));
           }
 
-          // Stream the AI explanation
+          // STEP 4: Generate detailed analysis with Hebrew/Greek insights
           if (analysisResult.verses && analysisResult.verses.length > 0) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", message: "Generating analysis with original languages..." })}\n\n`));
 
+            // Combine all verses with their original language texts for AI analysis
             const versesText = analysisResult.verses.map(verse => 
               `${verse.book} ${verse.chapter}:${verse.verse}: ${verse.kjvText}${verse.originalText ? `\n${verse.originalLanguage === 'hebrew' ? 'Hebrew' : 'Greek'}: ${verse.originalText}` : ''}`
             ).join('\n\n');
@@ -149,7 +158,7 @@ How this applies to believers today
 
 Format your response with clear sections using ### headers and natural paragraph breaks. Use **bold** sparingly only for truly important terms. Write in a conversational, accessible style that's easy to read.`;
 
-            // Stream the completion
+            // STEP 5: Stream AI analysis back to user word by word
             const completion = await openai.chat.completions.create({
               model: 'gpt-4o-mini',
               messages: [
@@ -167,6 +176,7 @@ Format your response with clear sections using ### headers and natural paragraph
               stream: true
             });
 
+            // Send each word/phrase as it comes from AI (creates typing effect)
             for await (const chunk of completion) {
               const content = chunk.choices[0]?.delta?.content;
               if (content) {
@@ -175,11 +185,12 @@ Format your response with clear sections using ### headers and natural paragraph
             }
           }
 
-          // Send completion signal
+          // Tell the frontend we're done
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "complete" })}\n\n`));
           controller.close();
 
         } catch (error) {
+          // If anything goes wrong, send error message to user
           console.error("Error in streaming response:", error);
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
             type: "error", 

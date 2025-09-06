@@ -1,5 +1,6 @@
 "use client";
 
+import { suggestedQuestions } from "@/consts/global";
 import { useState } from "react";
 
 interface Message {
@@ -35,6 +36,7 @@ export default function Home() {
 
     try {
       // Parse the user's intent first
+      // CURRENT ROUTE: /api/parse-intent - Cleans up user input and extracts intent
       const intentResponse = await fetch("/api/parse-intent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -47,7 +49,25 @@ export default function Home() {
       const hasSpecificVerse = intentData.hasSpecificVerse || false;
       const specificVerses = intentData.specificVerses || [];
 
-      // Use the streaming analyze-verse endpoint
+      // CURRENT ROUTE: /api/analyze-verse-stream - Streams Bible analysis with Hebrew/Greek insights
+      // 
+      // ALTERNATIVE ROUTES YOU COULD USE INSTEAD:
+      //
+      // 1. "/api/analyze-verse" - Same analysis but ALL AT ONCE (no streaming)
+      //    • Use if: You want simpler code, don't need the typing effect
+      //    • Returns: Complete verses + explanation in one response
+      //    • Good for: API integrations, when you want all data immediately
+      //
+      // 2. "/api/search" - Basic Bible search with simple AI summary
+      //    • Use if: You want faster, cheaper responses without Hebrew/Greek
+      //    • Returns: Verses + brief summary (no original language analysis)
+      //    • Good for: Quick verse lookup, when speed > depth
+      //
+      // 3. "/api/search-rerank" - Advanced search with better relevance ranking
+      //    • Use if: You want better search accuracy but still simple responses
+      //    • Returns: Reranked verses + AI summary (no Hebrew/Greek)
+      //    • Good for: When search quality is important but don't need deep analysis
+      //
       const response = await fetch("/api/analyze-verse-stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -151,7 +171,7 @@ export default function Home() {
                   };
                   setMessages((prev) => [...prev, errorMessage]);
                   setCurrentResponse("");
-                  return; // Exit the streaming loop
+                  return;
               }
             } catch (parseError) {
               console.warn("Failed to parse streaming data:", parseError);
@@ -186,15 +206,6 @@ export default function Home() {
       hour12: true,
     });
   };
-
-  const suggestedQuestions = [
-    "What does John 3:16 mean?",
-    "Explain Romans 8:28 from the original Greek",
-    "What does Psalms 23:1 mean in Hebrew?",
-    "Give me 5 verses about love",
-    "What does Genesis 1:1 say in Hebrew?",
-    "Explain 1 Corinthians 13:4 in Greek",
-  ];
 
   if (messages.length === 0) {
     return (

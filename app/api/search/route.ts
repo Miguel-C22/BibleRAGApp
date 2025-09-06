@@ -17,7 +17,8 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// AI-powered book name normalization
+// UTILITY: AI-powered book name normalization - handles misspellings and abbreviations
+// Converts user input like "mathew", "1 cor", "psams" to proper Bible book names
 const normalizeBookName = async (bookName: string): Promise<string | null> => {
   try {
     const response = await openai.chat.completions.create({
@@ -60,13 +61,15 @@ Examples:
 
 export async function POST(request: NextRequest) {
   try {
+    // Extract query and topK from request body
     const { query, topK = 5 } = await request.json();
 
+    // Validate that query exists
     if (!query) {
       return NextResponse.json({ error: "Query is required" }, { status: 400 });
     }
 
-    // Check if question is Bible-related FIRST using original query
+    // STEP 1: Bible Relevance Check - Filter out non-Bible questions to keep chatbot focused
     try {
       const relevanceCheck = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -84,11 +87,13 @@ export async function POST(request: NextRequest) {
         max_tokens: 5,
       });
 
+      // Parse the AI response to determine if question is Bible-related
       const relevanceResponse = relevanceCheck.choices[0]?.message?.content
         ?.trim()
         .toUpperCase();
       const isRelevant = relevanceResponse === "YES";
 
+      // If not Bible-related, return polite rejection message
       if (!isRelevant) {
         return NextResponse.json({
           query,
@@ -103,7 +108,7 @@ export async function POST(request: NextRequest) {
       // If relevance check fails, default to allowing the query through
     }
 
-    // Now clean up the query for spelling/grammar issues (only for Bible questions)
+    // STEP 2: Query Cleanup - Fix spelling/grammar to improve search accuracy
     let cleanedQuery = query;
     try {
       const cleanupResponse = await openai.chat.completions.create({
@@ -119,13 +124,14 @@ export async function POST(request: NextRequest) {
         max_tokens: 100,
       });
 
+      // Use cleaned query if successful, fallback to original if cleanup fails
       cleanedQuery =
         cleanupResponse.choices[0]?.message?.content?.trim() || query;
     } catch (cleanupError) {
-      // Query cleanup failed, using original
+      // Query cleanup failed, using original query
     }
 
-    // AI-powered response preference analyzer
+    // UTILITY: Response preference analyzer - determines if user wants verse-only, detailed explanation, or summary
     const analyzeResponsePreference = async (query: string) => {
       try {
         const response = await openai.chat.completions.create({
@@ -165,8 +171,9 @@ Examples:
 
     const responsePreference = await analyzeResponsePreference(cleanedQuery);
 
-    // Check if this is a specific verse request using the cleaned query
-    // Extract book name and verse reference patterns
+    // STEP 3A: Specific Verse Detection - Check if user is requesting exact Bible verses (e.g., "John 3:16")
+    // Extract book name and verse reference patterns from user query
+    // UTILITY: Extract verse references like "John 3:16", "1 Corinthians 13:4-7" from text
     const extractVerseReferences = (text: string) => {
       const results = [];
 
@@ -191,8 +198,9 @@ Examples:
 
     const verseMatches = extractVerseReferences(cleanedQuery);
 
+    // If we found specific verse requests, handle them directly (bypasses vector search)
     if (verseMatches.length > 0) {
-      // This is a specific verse request, get exact verses
+      // This is a specific verse request, get exact verses by ID lookup
       const requestedVerses = [];
 
       for (const match of verseMatches) {
@@ -201,7 +209,7 @@ Examples:
         const startVerseNum = parseInt(startVerse);
         const endVerseNum = endVerse ? parseInt(endVerse) : startVerseNum;
 
-        // Use AI to normalize the book name
+        // Use AI to normalize the book name (handles misspellings and abbreviations)
         const rawBookName = bookName.trim();
         const normalizedBookName = await normalizeBookName(rawBookName);
         if (!normalizedBookName) {
@@ -209,6 +217,7 @@ Examples:
         }
 
         // Try to fetch each verse directly by ID using the normalized book name
+        // This is faster than vector search for exact verse requests
         for (
           let verseNum = startVerseNum;
           verseNum <= endVerseNum;
@@ -246,8 +255,8 @@ Examples:
           })
           .join("\n\n");
 
-        // Generate AI response based on user preference
-        let aiResponse = verses; // fallback
+        // Generate AI response based on user's stated preference (verse-only, summary, or detailed)
+        let aiResponse = verses; // fallback to just verses if AI response fails
 
         if (responsePreference.wantsSummary) {
           try {
@@ -303,8 +312,10 @@ Please:
       }
     }
 
+    // STEP 3B: Vector Search - If not a specific verse request, do semantic search
     const queryEmbedding = await createEmbedding(cleanedQuery, 1536);
 
+    // Search vector database for semantically similar Bible passages
     const results = await queryVectors(
       process.env.PINECONE_INDEX_NAME!,
       queryEmbedding,
@@ -312,6 +323,7 @@ Please:
       true
     );
 
+    // Transform raw Pinecone results into structured document format
     const documents = results.map((match: any) => ({
       id: match.id,
       score: match.score,
@@ -322,9 +334,10 @@ Please:
       verse: match.metadata?.verse,
     }));
 
-    // Generate AI response if verses found, using user preference
+    // STEP 4: Response Generation - Create AI summary based on user preference
     let aiResponse = "";
     if (documents.length > 0) {
+      // Format search results into readable verse format
       const verses = documents
         .map((doc) => {
           const bookName = doc.book || doc.abbrev.toUpperCase();
@@ -333,6 +346,7 @@ Please:
         })
         .join("\n\n");
 
+      // Generate AI summary if user wants explanation (not just verses)
       if (responsePreference.wantsSummary) {
         const assistantPrompt =
           responsePreference.responseStyle === "detailed"
@@ -356,6 +370,7 @@ Please:
 - Make it clear, concise, and encouraging.
 - Keep your response under 150 words.`;
 
+        // Generate contextual AI response using GPT-4o-mini
         try {
           const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -373,14 +388,16 @@ Please:
             ? `${verses}\n\n📝 Summary:\n${summary}`
             : verses;
         } catch (aiError) {
+          // Fallback to simple verse listing if AI response fails
           aiResponse = `Here are some relevant Bible verses about "${query}":\n\n${verses}`;
         }
       } else {
-        // User wants verses only
+        // User specifically requested verses only (no summary or explanation)
         aiResponse = verses;
       }
     }
 
+    // Return complete response with search results and AI summary
     return NextResponse.json({
       query,
       documents,

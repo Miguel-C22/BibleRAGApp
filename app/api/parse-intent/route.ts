@@ -3,14 +3,18 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// This route takes a messy user query and figures out what they really want
+// Example: "giv me jon 316" becomes "give me John 3:16" + knows they want 1 specific verse
 export async function POST(request: NextRequest) {
   try {
+    // Get the user's question from the request
     const { query } = await request.json();
 
     if (!query) {
       return NextResponse.json({ error: "Query is required" }, { status: 400 });
     }
 
+    // Ask AI to clean up the query and figure out what the user wants
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -41,25 +45,28 @@ Return only the JSON object, nothing else.`,
       temperature: 0,
     });
 
+    // Get the AI's response (should be JSON with cleaned query info)
     const result = response.choices[0]?.message?.content?.trim();
 
     try {
+      // Try to parse the AI's JSON response
       const parsedResult = JSON.parse(result || "{}");
 
-      // Validate and set defaults
-      const cleanedQuery = parsedResult.cleanedQuery || query;
-      const topK = Math.min(Math.max(parseInt(parsedResult.topK) || 5, 1), 50);
-      const hasSpecificVerse = Boolean(parsedResult.hasSpecificVerse);
-      const specificVerses = parsedResult.specificVerses || [];
+      // Clean up the results and set safe defaults
+      const cleanedQuery = parsedResult.cleanedQuery || query; // Fixed spelling/grammar
+      const topK = Math.min(Math.max(parseInt(parsedResult.topK) || 5, 1), 50); // How many verses (1-50)
+      const hasSpecificVerse = Boolean(parsedResult.hasSpecificVerse); // True if asking for "John 3:16"
+      const specificVerses = parsedResult.specificVerses || []; // Array of specific verse requests
 
+      // Send back the cleaned up query info
       return NextResponse.json({
-        cleanedQuery,
-        topK,
-        hasSpecificVerse,
-        specificVerses,
+        cleanedQuery,        // "give me John 3:16" (fixed spelling)
+        topK,               // 1 (number of verses they want)
+        hasSpecificVerse,   // true (they asked for a specific verse)
+        specificVerses,     // [{"book": "John", "chapter": 3, "verse": 16}]
       });
     } catch (parseError) {
-      // Fallback to defaults if parsing fails
+      // If something goes wrong, use safe defaults
       return NextResponse.json({
         cleanedQuery: query,
         topK: 5,

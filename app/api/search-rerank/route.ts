@@ -19,14 +19,16 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(request: NextRequest) {
   try {
+    // Extract query and topK from request body
     const { query, topK = 10 } = await request.json();
 
+    // Validate that query exists
     if (!query) {
       return NextResponse.json({ error: "Query is required" }, { status: 400 });
     }
 
 
-    // Check if question is Bible-related FIRST using original query
+    // STEP 1: Bible Relevance Check - Filter out non-Bible questions to keep chatbot focused
     try {
       const relevanceCheck = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -44,10 +46,12 @@ export async function POST(request: NextRequest) {
         max_tokens: 5,
       });
 
+      // Parse the AI response to determine if question is Bible-related
       const relevanceResponse = relevanceCheck.choices[0]?.message?.content?.trim().toUpperCase();
       
       const isRelevant = relevanceResponse === "YES";
 
+      // If not Bible-related, return polite rejection message
       if (!isRelevant) {
         return NextResponse.json({
           query,
@@ -62,7 +66,7 @@ export async function POST(request: NextRequest) {
     } catch (relevanceError) {
     }
 
-    // First, clean up the query for spelling/grammar issues
+    // STEP 2: Query Cleanup - Fix spelling/grammar to improve search accuracy
     let cleanedQuery = query;
     try {
       const cleanupResponse = await openai.chat.completions.create({
@@ -78,14 +82,17 @@ export async function POST(request: NextRequest) {
         max_tokens: 100,
       });
 
+      // Use cleaned query if successful, fallback to original if cleanup fails
       cleanedQuery =
         cleanupResponse.choices[0]?.message?.content?.trim() || query;
     } catch (cleanupError) {
-      // Query cleanup failed, using original
+      // Query cleanup failed, using original query
     }
 
+    // STEP 3: Vector Search - Convert query to embedding and search Pinecone for similar Bible verses
     const queryEmbedding = await createEmbedding(cleanedQuery, 1536);
 
+    // Search vector database for semantically similar Bible passages
     const results = await queryVectors(
       process.env.PINECONE_INDEX_NAME!,
       queryEmbedding,
@@ -93,6 +100,7 @@ export async function POST(request: NextRequest) {
       true
     );
 
+    // Transform raw Pinecone results into structured document format
     const documents = results.map((match: any) => ({
       id: match.id,
       score: match.score,
@@ -103,8 +111,10 @@ export async function POST(request: NextRequest) {
       verse: match.metadata?.verse,
     }));
 
+    // STEP 4: Reranking - Use OpenAI's reranking model for better semantic relevance
     const rerankedResults = await rerank(query, documents, 5);
 
+    // Combine original documents with rerank scores for final ranking
     const rerankedDocuments = rerankedResults.data.map((result: any) => {
       const originalDoc = documents[result.index];
       return {
@@ -113,16 +123,20 @@ export async function POST(request: NextRequest) {
       };
     });
 
-    // Generate AI response with the reranked results
+    // STEP 5: Response Generation - Format verses and create AI summary
     let aiResponse = "";
+    
+    // Format reranked documents into readable verse format
     const verses = rerankedDocuments
       .map((doc) => {
         const bookName = doc.book || doc.abbrev.toUpperCase();
+        // Remove any markup from verse text
         const cleanText = doc.text.replace(/\{([^}]*)\}/g, "$1");
         return `${bookName} ${doc.chapter}:${doc.verse} - ${cleanText}`;
       })
       .join("\n\n");
 
+    // Generate AI summary if we found relevant verses
     if (rerankedDocuments.length > 0) {
       const assistantPrompt = `
 You are a helpful Bible assistant. Here are relevant Bible verses for the user's query about "${query}":
@@ -136,6 +150,7 @@ Please:
 - Keep your response under 150 words.
 `;
 
+      // Generate contextual AI response using GPT-4o-mini
       try {
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
@@ -150,17 +165,19 @@ Please:
 
         aiResponse = completion.choices[0]?.message?.content || "";
       } catch (aiError) {
+        // Fallback to simple verse listing if AI response fails
         aiResponse = `Here are some relevant Bible verses about "${query}":\n\n${verses}`;
       }
     }
 
+    // Return complete response with reranked results and AI summary
     return NextResponse.json({
       query,
       documents: rerankedDocuments,
       total: rerankedDocuments.length,
       aiResponse,
       verses: verses,
-      reranked: true,
+      reranked: true, // Flag indicating this used reranking
     });
   } catch (error) {
     return NextResponse.json(

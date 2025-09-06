@@ -4,15 +4,18 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// This route provides NON-STREAMING Bible analysis with Hebrew/Greek insights
+// Unlike the streaming version, this sends back ALL data at once when complete
 export async function POST(request: NextRequest) {
   try {
+    // Get the user's question and optional parameters
     const { query, topK = 5, specificVerses } = await request.json();
 
     if (!query) {
       return NextResponse.json({ error: "Query is required" }, { status: 400 });
     }
 
-    // Check if question is Bible-related first
+    // STEP 1: Check if this is a Bible-related question (same as other routes)
     try {
       const relevanceCheck = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -33,6 +36,7 @@ export async function POST(request: NextRequest) {
       const relevanceResponse = relevanceCheck.choices[0]?.message?.content?.trim().toUpperCase();
       const isRelevant = relevanceResponse === "YES";
 
+      // If not Bible-related, return rejection message
       if (!isRelevant) {
         return NextResponse.json({
           query,
@@ -46,29 +50,35 @@ export async function POST(request: NextRequest) {
       console.error("Relevance check failed:", relevanceError);
     }
 
-    // Parse the query to see if it's asking for specific verses
+    // STEP 2: Determine what type of analysis to do
     let analysisResult;
     
+    // STEP 2A: Handle specific verses (like "John 3:16")
     if (specificVerses && Array.isArray(specificVerses) && specificVerses.length > 0) {
-      // Handle specific verse requests like "John 3:16"
+      // User asked for exact verses - look them up directly
+      // Look up each specific verse with Hebrew/Greek text and analysis
       const versePromises = specificVerses.map(verseInfo => 
         analyzeSpecificVerse(verseInfo.book, verseInfo.chapter, verseInfo.verse)
       );
       
       const verseResults = await Promise.all(versePromises);
       
-      // Combine all verses and explanations
+      // Combine all the verses from the results
       const allVerses = verseResults.flatMap(result => result.verses);
       
-      // Generate a combined explanation if multiple verses
+      // Create explanation that connects multiple verses (if user asked for multiple)
       let combinedExplanation = '';
       if (verseResults.length === 1) {
+        // Only one verse - use its individual explanation
         combinedExplanation = verseResults[0].explanation;
       } else {
+        // Multiple verses - create combined analysis
+        // Combine all verses with their Hebrew/Greek text for AI analysis
         const versesText = allVerses.map(verse => 
           `${verse.book} ${verse.chapter}:${verse.verse}: ${verse.kjvText}${verse.originalText ? `\n${verse.originalLanguage === 'hebrew' ? 'Hebrew' : 'Greek'}: ${verse.originalText}` : ''}`
         ).join('\n\n');
         
+        // Ask AI to create comprehensive analysis connecting all the verses
         try {
           const combinedPrompt = `You are a Bible scholar with expertise in Hebrew and Greek. A user asked: "${query}"
 
@@ -103,6 +113,7 @@ Keep your explanation engaging, educational, and accessible to general readers.`
 
           combinedExplanation = completion.choices[0]?.message?.content || 'Unable to generate explanation.';
         } catch (error) {
+          // Fallback: just combine individual explanations if AI fails
           combinedExplanation = verseResults.map(result => result.explanation).join('\n\n---\n\n');
         }
       }
@@ -111,36 +122,39 @@ Keep your explanation engaging, educational, and accessible to general readers.`
         verses: allVerses,
         explanation: combinedExplanation,
         query,
-        analysisType: 'specific_verses'
+        analysisType: 'specific_verses' // Flag indicating this was specific verses
       };
     } else {
-      // Handle general topical queries like "verses about love"
+      // STEP 2B: Handle general questions (like "verses about love")
+      // Search for relevant verses and generate analysis
       analysisResult = await analyzeVerses(query, Math.min(topK, 10));
-      analysisResult.analysisType = 'topical_search';
+      analysisResult.analysisType = 'topical_search'; // Flag indicating this was a search
     }
 
-    // Format the response
+    // STEP 3: Format all the data for the response
     const formattedVerses = analysisResult.verses.map(verse => ({
       reference: `${verse.book} ${verse.chapter}:${verse.verse}`,
-      kjvText: verse.kjvText,
-      originalText: verse.originalText || null,
-      originalLanguage: verse.originalLanguage || null,
+      kjvText: verse.kjvText,                    // English text
+      originalText: verse.originalText || null,   // Hebrew/Greek text
+      originalLanguage: verse.originalLanguage || null, // "hebrew" or "greek"
       testament: verse.testament,
       book: verse.book,
       chapter: verse.chapter,
       verse: verse.verse
     }));
 
+    // Send back everything at once (verses + complete explanation)
     return NextResponse.json({
       query: analysisResult.query,
-      verses: formattedVerses,
-      explanation: analysisResult.explanation,
-      analysisType: analysisResult.analysisType,
+      verses: formattedVerses,               // Array of verses with Hebrew/Greek
+      explanation: analysisResult.explanation, // Complete AI analysis
+      analysisType: analysisResult.analysisType, // "specific_verses" or "topical_search"
       total: formattedVerses.length,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
+    // If anything goes wrong, send error response
     console.error("Error in analyze-verse endpoint:", error);
     return NextResponse.json(
       { 
