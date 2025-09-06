@@ -127,3 +127,11 @@ Parses user queries to extract verse references and intent.
 - `/libs/` - Core functionality (OpenAI, Pinecone, verse analysis)
 - `/scripts/` - Data loading and processing scripts
 - `/data/` - Bible data files (KJV JSON, original languages)
+
+## Welcome Page
+<img width="1728" height="960" alt="image" src="https://github.com/user-attachments/assets/f48a9a19-354c-427e-82a4-05b1c20dd58f" />
+
+## Response Example
+<img width="1724" height="938" alt="image" src="https://github.com/user-attachments/assets/506a0f00-107e-414b-b6e8-0056c27a2635" />
+
+
